@@ -1,0 +1,183 @@
+name: build
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'debian/**'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      virgl_ver: ${{ steps.q.outputs.virgl_ver }}
+      patch_sha: ${{ steps.q.outputs.patch_sha }}
+      tag:       ${{ steps.q.outputs.tag }}
+      should_build: ${{ steps.q.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: q
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VIRGL_VER=$(curl -fsSL "https://gitlab.freedesktop.org/api/v4/projects/virgl%2Fvirglrenderer/repository/tags?per_page=20" \
+            | jq -r '.[].name' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          PATCH_SHA=$(curl -fsSL "https://api.github.com/repos/cmspam/xe-native-context-enablement/commits?path=virglrenderer-xe-native-context.patch&per_page=1" \
+            | jq -r '.[0].sha' | cut -c1-7)
+          TAG="virglrenderer-${VIRGL_VER}+xe.${PATCH_SHA}"
+
+          # Force rebuild also when this repo's debian/ or workflow changed
+          # since the last release. We compare release tag against build inputs.
+          SHOULD=true
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [[ "${{ github.event_name }}" != "workflow_dispatch" && "${{ github.event_name }}" != "push" ]]; then
+              SHOULD=false
+            fi
+          fi
+
+          {
+            echo "virgl_ver=$VIRGL_VER"
+            echo "patch_sha=$PATCH_SHA"
+            echo "tag=$TAG"
+            echo "should_build=$SHOULD"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "virglrenderer: $VIRGL_VER"
+          echo "patch sha:     $PATCH_SHA"
+          echo "tag:           $TAG"
+          echo "build:         $SHOULD"
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+    env:
+      VIRGL_VER: ${{ needs.check.outputs.virgl_ver }}
+      PATCH_SHA: ${{ needs.check.outputs.patch_sha }}
+      TAG:       ${{ needs.check.outputs.tag }}
+    steps:
+      - name: Install build prereqs
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sed -i 's/^Components: main$/Components: main contrib non-free/' /etc/apt/sources.list.d/debian.sources
+          sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential devscripts dpkg-dev equivs quilt fakeroot \
+            git ca-certificates curl wget jq
+
+      - uses: actions/checkout@v4
+
+      - name: Stage upstream tarball + debian/
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/src && cd /tmp/src
+          curl -fsSL "https://gitlab.freedesktop.org/virgl/virglrenderer/-/archive/virglrenderer-${VIRGL_VER}/virglrenderer-virglrenderer-${VIRGL_VER}.tar.bz2" \
+            -o tmp.tar.bz2
+          tar xjf tmp.tar.bz2
+          mv "virglrenderer-virglrenderer-${VIRGL_VER}" "virglrenderer-${VIRGL_VER}"
+          rm tmp.tar.bz2
+          tar cjf "virglrenderer_${VIRGL_VER}.orig.tar.bz2" "virglrenderer-${VIRGL_VER}"
+          cp -a "$GITHUB_WORKSPACE/debian" "virglrenderer-${VIRGL_VER}/debian"
+          curl -fsSL "https://raw.githubusercontent.com/cmspam/xe-native-context-enablement/master/virglrenderer-xe-native-context.patch" \
+            -o "virglrenderer-${VIRGL_VER}/debian/patches/0001-xe-native-context.patch"
+
+      - name: Generate debian/changelog
+        run: |
+          set -euo pipefail
+          cd "/tmp/src/virglrenderer-${VIRGL_VER}"
+          DATE=$(date -uR)
+          cat > debian/changelog <<EOF
+          virglrenderer (1:${VIRGL_VER}-1+xe.${PATCH_SHA}) trixie; urgency=medium
+
+            * Build of upstream virglrenderer ${VIRGL_VER} with xe-native-context
+              patch (cmspam/xe-native-context-enablement @ ${PATCH_SHA}).
+            * drm-renderers: amdgpu, panfrost, asahi, msm, i915, xe.
+            * venus, video, sysprof tracing.
+
+           -- cmspam <cmspam@users.noreply.github.com>  ${DATE}
+          EOF
+
+      - name: Install build deps
+        run: |
+          set -euo pipefail
+          cd "/tmp/src/virglrenderer-${VIRGL_VER}"
+          mk-build-deps -i -t 'apt-get -y --no-install-recommends' debian/control
+
+      - name: Build .debs
+        run: |
+          set -euo pipefail
+          cd "/tmp/src/virglrenderer-${VIRGL_VER}"
+          dpkg-buildpackage -b -us -uc
+
+      - name: List artifacts
+        run: ls -la /tmp/src/*.deb
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd /tmp/src
+
+          api=https://api.github.com/repos/${GITHUB_REPOSITORY}/releases
+          uploads=https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases
+
+          # Create release (idempotent: delete first if exists, e.g. workflow_dispatch re-run)
+          existing=$(curl -fsSL -H "Authorization: token ${GH_TOKEN}" "${api}/tags/${TAG}" 2>/dev/null | jq -r '.id // empty')
+          if [[ -n "$existing" ]]; then
+            curl -fsSL -X DELETE -H "Authorization: token ${GH_TOKEN}" "${api}/${existing}"
+          fi
+
+          body=$(cat <<EOB
+          virglrenderer ${VIRGL_VER} for Proxmox VE 9 (trixie).
+
+          - Upstream: https://gitlab.freedesktop.org/virgl/virglrenderer/-/tags/${VIRGL_VER}
+          - Patch: https://github.com/cmspam/xe-native-context-enablement/blob/${PATCH_SHA}/virglrenderer-xe-native-context.patch
+          - drm-renderers: amdgpu, panfrost, asahi, msm, i915, xe
+          - Also: venus, video, sysprof tracing
+
+          Install:
+          \`\`\`
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | sudo bash
+          \`\`\`
+          EOB
+          )
+
+          payload=$(jq -nc \
+            --arg tag "$TAG" \
+            --arg name "$TAG" \
+            --arg body "$body" \
+            '{tag_name:$tag, name:$name, body:$body, draft:false, prerelease:false}')
+
+          rel=$(curl -fsSL -X POST -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -d "$payload" "${api}")
+          rid=$(echo "$rel" | jq -r .id)
+          echo "Release id: $rid"
+
+          for f in *.deb; do
+            echo "Uploading $f..."
+            curl -fsSL -X POST -H "Authorization: token ${GH_TOKEN}" \
+              -H "Content-Type: application/x-debian-package" \
+              --data-binary @"$f" \
+              "${uploads}/${rid}/assets?name=$(basename "$f")" >/dev/null
+          done
+
+          echo "Released: ${TAG}"

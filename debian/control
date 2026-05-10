@@ -1,0 +1,64 @@
+Source: virglrenderer
+Section: libs
+Priority: optional
+Maintainer: cmspam <cmspam@users.noreply.github.com>
+Build-Depends: check,
+               debhelper-compat (= 13),
+               libdrm-dev,
+               libegl1-mesa-dev,
+               libepoxy-dev,
+               libgbm-dev (>= 18.0.0),
+               libsysprof-capture-4-dev,
+               libva-dev,
+               libvulkan-dev,
+               meson,
+               python3-setuptools,
+               python3-yaml,
+               pkgconf,
+               dh-exec,
+Homepage: https://virgil3d.github.io/
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: libvirglrenderer1
+Architecture: any
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Multi-Arch: same
+Description: virtual GPU for KVM virtualization
+ Library used by qemu to implement 3D GPU support for the virtio GPU.
+ .
+ Virgil is a research project to investigate the possibility of creating
+ a virtual 3D GPU for use inside qemu virtual machines, that allows the
+ guest operating system to use the capabilities of the host GPU
+ to accelerate 3D rendering. The plan is to have a guest GPU that is fully
+ independent of the host GPU.
+
+Package: libvirglrenderer-dev
+Section: libdevel
+Architecture: any
+Depends: libvirglrenderer1 (= ${binary:Version}), ${misc:Depends}
+Multi-Arch: same
+Description: virtual GPU for KVM virtualization - headers
+ Library used by qemu to implement 3D GPU support for the virtio GPU.
+ .
+ Virgil is a research project to investigate the possibility of creating
+ a virtual 3D GPU for use inside qemu virtual machines, that allows the
+ guest operating system to use the capabilities of the host GPU
+ to accelerate 3D rendering. The plan is to have a guest GPU that is fully
+ independent of the host GPU.
+ .
+ This package contains the development files and headers.
+
+Package: virgl-server
+Section: otherosfs
+Architecture: any
+Depends: libvirglrenderer1 (= ${binary:Version}),
+         ${misc:Depends},
+         ${shlibs:Depends}
+Description: virtual GPU for KVM virtualization - vtest server used
+ for testing and container virtualization
+ .
+ Virgl is a software to separate OpenGL rendering from the host GPU
+ The vtest server provides the means to do this without going through
+ full virtualization

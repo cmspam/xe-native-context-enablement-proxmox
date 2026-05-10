@@ -1,0 +1,10 @@
+
+Contributions from other developers are welcome, instead of making an
+NMU, please consider joining pkg-qemu:
+
+  https://alioth.debian.org/projects/pkg-qemu
+
+Whether you are making an NMU or adding yourself in the pkg-qemu
+team, please make sure any changes you make are tagged and pushed into the
+Git repository on alioth when you upload a package with dput.
+

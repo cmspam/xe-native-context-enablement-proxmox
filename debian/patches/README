@@ -1,0 +1,4 @@
+The xe-native-context patch is fetched at build time from
+cmspam/xe-native-context-enablement and dropped in here as
+0001-xe-native-context.patch. Not committed so the build always
+picks up the latest version.

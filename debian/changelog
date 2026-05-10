@@ -1,0 +1,5 @@
+virglrenderer (1:0.0.0-0+xe.stub) trixie; urgency=medium
+
+  * Stub entry for local builds; CI overwrites this with the real version.
+
+ -- cmspam <cmspam@users.noreply.github.com>  Sun, 10 May 2026 00:00:00 +0000

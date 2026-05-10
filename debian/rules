@@ -1,0 +1,24 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/buildflags.mk
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+configure-opts = \
+	-Ddrm-renderers=amdgpu-experimental,panfrost-experimental,asahi,msm,i915-experimental,xe-experimental \
+	-Dtests=true \
+	-Dtracing=sysprof \
+	-Dvenus=true \
+	-Dvideo=true
+
+override_dh_auto_configure:
+	dh_auto_configure -- ${configure-opts}
+
+execute_after_dh_auto_install:
+	sed -i '/^Requires\.private:/D' \
+	  debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/virglrenderer.pc
+
+override_dh_auto_test:
+	# tests need /dev/dri/, skip in build environment

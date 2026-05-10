@@ -1,0 +1,3 @@
+#!/usr/bin/dh-exec --with-scripts=filter-arch
+/usr/bin/*
+[!armel] /usr/libexec/virgl_render_server
