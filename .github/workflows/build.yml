@@ -17,6 +17,10 @@ concurrency:
   group: build
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -139,11 +143,21 @@ jobs:
           api=https://api.github.com/repos/${GITHUB_REPOSITORY}/releases
           uploads=https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases
 
-          # Create release (idempotent: delete first if exists, e.g. workflow_dispatch re-run)
-          existing=$(curl -fsSL -H "Authorization: token ${GH_TOKEN}" "${api}/tags/${TAG}" 2>/dev/null | jq -r '.id // empty')
-          if [[ -n "$existing" ]]; then
-            curl -fsSL -X DELETE -H "Authorization: token ${GH_TOKEN}" "${api}/${existing}"
+          # Look up existing release for this tag (404 is expected on first build)
+          tmpf=$(mktemp)
+          code=$(curl -sL -o "$tmpf" -w '%{http_code}' \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${api}/tags/${TAG}")
+          if [[ "$code" == "200" ]]; then
+            old_id=$(jq -r .id "$tmpf")
+            echo "Deleting existing release ${old_id}..."
+            curl -sf -X DELETE -H "Authorization: token ${GH_TOKEN}" "${api}/${old_id}"
+          elif [[ "$code" != "404" ]]; then
+            echo "Unexpected HTTP $code from release lookup:"
+            cat "$tmpf"; exit 1
           fi
+          rm -f "$tmpf"
 
           body=$(cat <<EOB
           virglrenderer ${VIRGL_VER} for Proxmox VE 9 (trixie).
@@ -153,10 +167,9 @@ jobs:
           - drm-renderers: amdgpu, panfrost, asahi, msm, i915, xe
           - Also: venus, video, sysprof tracing
 
-          Install:
-          \`\`\`
-          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | sudo bash
-          \`\`\`
+          Install on Proxmox host:
+
+              curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | sudo bash
           EOB
           )
 
@@ -166,7 +179,7 @@ jobs:
             --arg body "$body" \
             '{tag_name:$tag, name:$name, body:$body, draft:false, prerelease:false}')
 
-          rel=$(curl -fsSL -X POST -H "Authorization: token ${GH_TOKEN}" \
+          rel=$(curl -sfL -X POST -H "Authorization: token ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -d "$payload" "${api}")
           rid=$(echo "$rel" | jq -r .id)
@@ -174,7 +187,7 @@ jobs:
 
           for f in *.deb; do
             echo "Uploading $f..."
-            curl -fsSL -X POST -H "Authorization: token ${GH_TOKEN}" \
+            curl -sfL -X POST -H "Authorization: token ${GH_TOKEN}" \
               -H "Content-Type: application/x-debian-package" \
               --data-binary @"$f" \
               "${uploads}/${rid}/assets?name=$(basename "$f")" >/dev/null
