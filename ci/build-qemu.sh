@@ -21,10 +21,13 @@ export DEBIAN_FRONTEND=noninteractive
 
 # Proxmox Trixie Release Key (rsa4096, expires 2034-11-10). Proxmox does not
 # publish this key at a stable standalone URL yet, only inside the keyring
-# .deb. We bootstrap trust by fetching that .deb over HTTPS and refusing to
-# proceed unless the embedded key matches this pinned fingerprint.
+# .deb, and download.proxmox.com is served over HTTP (its repos rely on GPG
+# signatures, not TLS). We bootstrap trust by fetching that .deb and refusing
+# to proceed unless the embedded key matches this pinned fingerprint; a
+# fingerprint is a cryptographic hash of the key, so HTTP transport cannot be
+# used to substitute a different key, and apt then verifies the signed repo.
 PMX_KEY_FPR="24B30F06ECC1836A4E5EFECBA7BCD1420BFE778E"
-PMX_KEYRING_DEB="https://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64/proxmox-archive-keyring_4.0_all.deb"
+PMX_KEYRING_DEB="http://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64/proxmox-archive-keyring_4.0_all.deb"
 
 echo "::group::Install build prerequisites"
 apt-get update
