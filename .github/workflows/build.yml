@@ -44,8 +44,10 @@ jobs:
           PATCH_SHA=$(curl -fsSL "https://api.github.com/repos/cmspam/xe-native-context-enablement/commits?path=virglrenderer-xe-native-context.patch&per_page=1" \
             | jq -r '.[0].sha' | cut -c1-7)
           # Latest pve-qemu version straight from the source we build from.
-          QEMU_VER=$(curl -fsSL "https://git.proxmox.com/?p=pve-qemu.git;a=blob_plain;f=debian/changelog;hb=HEAD" \
-            | head -1 | sed -E 's/^pve-qemu-kvm \(([^)]+)\).*/\1/')
+          # Capture first so curl is not the head of a pipe (head -1 closing the
+          # pipe early would SIGPIPE curl and trip pipefail).
+          QEMU_CHANGELOG=$(curl -fsSL "https://git.proxmox.com/?p=pve-qemu.git;a=blob_plain;f=debian/changelog;hb=HEAD")
+          QEMU_VER=$(printf '%s\n' "$QEMU_CHANGELOG" | sed -nE 's/^pve-qemu-kvm \(([^)]+)\).*/\1/p' | head -1)
           TAG="pve9-virgl${VIRGL_VER}+xe.${PATCH_SHA}+qemu${QEMU_VER}"
 
           # Rebuild when any input (virgl release, patch, or pve-qemu version)
