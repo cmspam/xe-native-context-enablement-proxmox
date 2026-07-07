@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO=cmspam/xe-native-context-enablement-proxmox
-PKGS=(libvirglrenderer1 virgl-server)
+PKGS=(libvirglrenderer1 virgl-server pve-qemu-kvm)
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run as root (sudo)." >&2
@@ -46,4 +46,6 @@ echo "Holding packages so apt upgrade does not replace them..."
 apt-mark hold "${PKGS[@]}"
 
 echo
-echo "Done. Restart QEMU VMs to pick up the new virglrenderer."
+echo "Done. The pve-qemu-kvm rebuild only takes effect for VMs started"
+echo "afterwards, so stop and start (not just reboot) your VMs, or migrate"
+echo "them, to pick up drm_native_context."

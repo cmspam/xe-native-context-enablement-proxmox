@@ -1,13 +1,21 @@
 # xe-native-context-enablement-proxmox
 
-`virglrenderer` `.deb` packages for Proxmox VE 9 (trixie) with the
-[xe-native-context patch][xe] applied and all upstream `drm-renderers`
-enabled (`amdgpu`, `panfrost`, `asahi`, `msm`, `i915`, `xe`), plus
-`venus`, `video`, and `sysprof` tracing.
+Drop-in `.deb` packages for Proxmox VE 9 (trixie) that enable
+`drm_native_context` for Intel Xe (and other supported GPUs) in guests,
+giving VA-API hardware video decode/encode and direct GPU command
+submission from the VM.
 
-This lets Proxmox VMs use `drm_native_context` for Intel Xe (and other
-supported GPUs), enabling VA-API hardware video decode/encode and direct
-GPU command submission from the guest.
+Two pieces are needed and both are shipped here:
+
+1. `virglrenderer` rebuilt from upstream with the
+   [xe-native-context patch][xe] and all `drm-renderers` enabled
+   (`amdgpu`, `panfrost`, `asahi`, `msm`, `i915`, `xe`), plus `venus`,
+   `video`, and `sysprof` tracing.
+2. `pve-qemu-kvm` rebuilt to link that `virglrenderer`. This is the part
+   that is easy to miss: stock `pve-qemu-kvm` is built against Debian
+   trixie's `virglrenderer` (1.1.0), which lacks the native-context API
+   at build time, so QEMU stubs it out. Shipping a patched
+   `virglrenderer` alone does nothing until QEMU is rebuilt against it.
 
 [xe]: https://github.com/cmspam/xe-native-context-enablement
 
@@ -19,28 +27,44 @@ On the Proxmox host:
 curl -fsSL https://raw.githubusercontent.com/cmspam/xe-native-context-enablement-proxmox/main/install.sh | sudo bash
 ```
 
-Or download `.deb` files from the latest [release][rel] and `dpkg -i`
-them yourself.
+This installs `libvirglrenderer1`, `virgl-server`, and `pve-qemu-kvm`,
+then `apt-mark hold`s them so `apt upgrade` does not replace them.
+
+Stop and start (not just reboot from inside) your VMs afterwards so they
+launch under the rebuilt QEMU.
+
+Or download the `.deb` files from the latest [release][rel] and
+`dpkg -i` them yourself.
 
 [rel]: https://github.com/cmspam/xe-native-context-enablement-proxmox/releases/latest
 
 ## Uninstall
 
+Release the holds and reinstall the stock Proxmox versions:
+
 ```sh
-sudo apt-mark unhold libvirglrenderer1 virgl-server
-sudo apt-get install --reinstall libvirglrenderer1 virgl-server
+sudo apt-mark unhold libvirglrenderer1 virgl-server pve-qemu-kvm
+sudo apt-get install --reinstall --allow-downgrades \
+  libvirglrenderer1 virgl-server pve-qemu-kvm
 ```
 
 ## How it works
 
 A daily GitHub Actions job checks for a new upstream `virglrenderer`
-release or a new commit to the patch in `cmspam/xe-native-context-enablement`.
-If either changed, it rebuilds inside a `debian:trixie` container and
-publishes the `.deb` files to a new GitHub Release.
+release, a new commit to the patch in
+`cmspam/xe-native-context-enablement`, or a new `pve-qemu` version. If
+any changed, it rebuilds both packages and publishes them to a new
+GitHub Release.
 
-Versions are stamped `1:<upstream>-1+xe.<patch-sha>` — the epoch makes
-the package outrank Trixie's distribution copy, and `apt-mark hold`
-prevents `apt upgrade` from touching it.
+- `virglrenderer` is built in a `debian:trixie` container.
+- `pve-qemu-kvm` is built from `git.proxmox.com/git/pve-qemu.git` with
+  the just-built `libvirglrenderer-dev` installed, so QEMU compiles in
+  native context.
+
+`virglrenderer` is versioned `1:<upstream>-1+xe.<patch-sha>` (the epoch
+makes it outrank Trixie's copy). `pve-qemu-kvm` is versioned
+`<pve-qemu-version>+virgl<virgl-version>` so it outranks the exact stock
+package it was built from. `apt-mark hold` keeps both in place.
 
 ## License
 

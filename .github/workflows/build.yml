@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - 'debian/**'
+      - 'ci/**'
       - '.github/workflows/build.yml'
 
 permissions:
@@ -27,6 +28,7 @@ jobs:
     outputs:
       virgl_ver: ${{ steps.q.outputs.virgl_ver }}
       patch_sha: ${{ steps.q.outputs.patch_sha }}
+      qemu_ver:  ${{ steps.q.outputs.qemu_ver }}
       tag:       ${{ steps.q.outputs.tag }}
       should_build: ${{ steps.q.outputs.should_build }}
     steps:
@@ -41,10 +43,13 @@ jobs:
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
           PATCH_SHA=$(curl -fsSL "https://api.github.com/repos/cmspam/xe-native-context-enablement/commits?path=virglrenderer-xe-native-context.patch&per_page=1" \
             | jq -r '.[0].sha' | cut -c1-7)
-          TAG="virglrenderer-${VIRGL_VER}+xe.${PATCH_SHA}"
+          # Latest pve-qemu version straight from the source we build from.
+          QEMU_VER=$(curl -fsSL "https://git.proxmox.com/?p=pve-qemu.git;a=blob_plain;f=debian/changelog;hb=HEAD" \
+            | head -1 | sed -E 's/^pve-qemu-kvm \(([^)]+)\).*/\1/')
+          TAG="pve9-virgl${VIRGL_VER}+xe.${PATCH_SHA}+qemu${QEMU_VER}"
 
-          # Force rebuild also when this repo's debian/ or workflow changed
-          # since the last release. We compare release tag against build inputs.
+          # Rebuild when any input (virgl release, patch, or pve-qemu version)
+          # changed since the last release, or when this repo's build inputs did.
           SHOULD=true
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             if [[ "${{ github.event_name }}" != "workflow_dispatch" && "${{ github.event_name }}" != "push" ]]; then
@@ -55,16 +60,18 @@ jobs:
           {
             echo "virgl_ver=$VIRGL_VER"
             echo "patch_sha=$PATCH_SHA"
+            echo "qemu_ver=$QEMU_VER"
             echo "tag=$TAG"
             echo "should_build=$SHOULD"
           } >> "$GITHUB_OUTPUT"
 
           echo "virglrenderer: $VIRGL_VER"
           echo "patch sha:     $PATCH_SHA"
+          echo "pve-qemu:      $QEMU_VER"
           echo "tag:           $TAG"
           echo "build:         $SHOULD"
 
-  build:
+  build-virgl:
     needs: check
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
@@ -73,7 +80,6 @@ jobs:
     env:
       VIRGL_VER: ${{ needs.check.outputs.virgl_ver }}
       PATCH_SHA: ${{ needs.check.outputs.patch_sha }}
-      TAG:       ${{ needs.check.outputs.tag }}
     steps:
       - name: Install build prereqs
         run: |
@@ -133,12 +139,84 @@ jobs:
       - name: List artifacts
         run: ls -la /tmp/src/*.deb
 
+      - name: Upload virglrenderer .debs
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs-virgl
+          path: /tmp/src/*.deb
+          retention-days: 2
+          if-no-files-found: error
+
+  build-qemu:
+    needs: [check, build-virgl]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VIRGL_VER: ${{ needs.check.outputs.virgl_ver }}
+      QEMU_VER:  ${{ needs.check.outputs.qemu_ver }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache /usr/local/share/boost /usr/lib/jvm || true
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Download virglrenderer .debs
+        uses: actions/download-artifact@v4
+        with:
+          name: debs-virgl
+          path: virgl
+
+      - name: Build pve-qemu-kvm against patched virglrenderer
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e VIRGL_VER="${VIRGL_VER}" \
+            -v "$PWD:/host" -w /host \
+            debian:trixie \
+            bash /host/ci/build-qemu.sh
+
+      - name: List artifacts
+        run: ls -la out/*.deb
+
+      - name: Upload pve-qemu .debs
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs-qemu
+          path: out/*.deb
+          retention-days: 2
+          if-no-files-found: error
+
+  release:
+    needs: [check, build-virgl, build-qemu]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VIRGL_VER: ${{ needs.check.outputs.virgl_ver }}
+      PATCH_SHA: ${{ needs.check.outputs.patch_sha }}
+      QEMU_VER:  ${{ needs.check.outputs.qemu_ver }}
+      TAG:       ${{ needs.check.outputs.tag }}
+    steps:
+      - name: Download all .debs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: debs-*
+          path: debs
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la debs/*.deb
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cd /tmp/src
+          cd debs
 
           api=https://api.github.com/repos/${GITHUB_REPOSITORY}/releases
           uploads=https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases
@@ -160,14 +238,20 @@ jobs:
           rm -f "$tmpf"
 
           body=$(cat <<EOB
-          virglrenderer ${VIRGL_VER} for Proxmox VE 9 (trixie).
+          Proxmox VE 9 (trixie) drm_native_context enablement.
 
-          - Upstream: https://gitlab.freedesktop.org/virgl/virglrenderer/-/tags/${VIRGL_VER}
-          - Patch: https://github.com/cmspam/xe-native-context-enablement/blob/${PATCH_SHA}/virglrenderer-xe-native-context.patch
-          - drm-renderers: amdgpu, panfrost, asahi, msm, i915, xe
-          - Also: venus, video, sysprof tracing
+          - virglrenderer ${VIRGL_VER} with the xe-native-context patch
+          - pve-qemu-kvm ${QEMU_VER} rebuilt to link the above (so native context
+            is compiled in instead of stubbed out against Debian's virglrenderer)
 
-          Install on Proxmox host:
+          Upstream:
+          - https://gitlab.freedesktop.org/virgl/virglrenderer/-/tags/${VIRGL_VER}
+          - https://github.com/cmspam/xe-native-context-enablement/blob/${PATCH_SHA}/virglrenderer-xe-native-context.patch
+          - https://git.proxmox.com/git/pve-qemu.git
+
+          drm-renderers: amdgpu, panfrost, asahi, msm, i915, xe; plus venus, video, sysprof.
+
+          Install on the Proxmox host:
 
               curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | sudo bash
           EOB
