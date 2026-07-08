@@ -38,6 +38,48 @@ Or download the `.deb` files from the latest [release][rel] and
 
 [rel]: https://github.com/cmspam/xe-native-context-enablement-proxmox/releases/latest
 
+## Enabling native context in a VM
+
+Installing the packages is not enough on its own; each guest also has to
+be told to use the native-context GPU. Do this in the VM's own config,
+not by editing anything under `/usr/share/perl5/PVE`.
+
+Set the display to VirGL and add QEMU `-set` overrides that turn on
+native context for the device Proxmox already builds:
+
+```sh
+qm set <vmid> --vga virtio-gl
+qm set <vmid> --args "-set device.vga.blob=on -set device.vga.hostmem=4G -set device.vga.max_hostmem=4G -set device.vga.drm_native_context=on"
+```
+
+which leaves the config (`/etc/pve/qemu-server/<vmid>.conf`) as:
+
+```
+vga: virtio-gl
+args: -set device.vga.blob=on -set device.vga.hostmem=4G -set device.vga.max_hostmem=4G -set device.vga.drm_native_context=on
+```
+
+`vga: virtio-gl` makes Proxmox build a `virtio-vga-gl` device with an
+`egl-headless` display and its normal managed SPICE, so the web
+`Console -> SPICE` button keeps working. The `-set device.vga.<prop>`
+lines modify that same device by id (`vga`), so nothing is duplicated
+and no Proxmox file is patched, and it survives package upgrades. Adjust
+`hostmem`/`max_hostmem` to taste; `max_hostmem` must be at least
+`hostmem`.
+
+The host needs `libgl1` and `libegl1` installed; Proxmox's VirGL display
+refuses to start without both.
+
+Stop and start the VM, then confirm inside the guest that the real
+driver is in use rather than the virgl translation layer:
+
+```sh
+glxinfo -B | grep -i renderer
+```
+
+A working AMD guest reports something like `AMD Radeon Graphics
+(radeonsi, ...)`. If it says `virgl`, native context did not engage.
+
 ## Uninstall
 
 Release the holds and reinstall the stock Proxmox versions:
